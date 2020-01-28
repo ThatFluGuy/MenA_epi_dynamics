@@ -58,7 +58,7 @@ input.dir  <- "C:/Users/O992928/Documents/MenA epi dynamics/Data/Input data"
 # Directory for simulation outputs
 output.dir <- "C:/Users/O992928/Documents/MenA epi dynamics/Data/Sim output"
 # Directory containing R scripts
-script.dir <- "C:/Users/O992928/documents/MenA epi dynamics/Programming"
+script.dir <- "C:/Users/O992928/documents/MenA epi dynamics/MenA_Epi_Code"
 
 mycountry <- "BFA"
 myregion <- "hyper"    
@@ -174,66 +174,37 @@ stopCluster(cl)
 # VIMC wants the size of the full population, not just the vaccine-
 # targetted population, so run this without scaling down
 onerun <- MenASimulation(startdt=start, enddt=end, fp=paramfixed[4,], initpop=initpop.full, vacc_program=vacc_program,
-                         countryparams=myparams.full, region=myregion, country=mycountry, inputdir=input.dir)
+                         countryparams=myparams.full, region=myregion, country=mycountry)
 cohortSize <- getCohortSize(onerun)
 totalPop <- cohortSize %>% 
   group_by(year) %>% summarize(tot=sum(cohortsize))
 
 
 ### (5) Create outputs ########################################################
+# Calculate overall annual incidence, identify frequency of major epidemics,  #
+# and get inter-epidemic incidence.                                           #
 
-# (B) Output summary results for the country/scenario set
-filename  <- paste0(mycountry, "_", vacc_program, "_", vacc_subprogram, "_", Sys.Date(), ".csv")
-filename1 <- paste0(output.dir, "/", filename)
-finalsummary <- summarizeForOutput(my_data, cohort=cohortSize, write=TRUE, filename=filename1)
-
-
-# (C) Output PSA results if needed
-if (PSA==TRUE){
-  filename.psa <- paste0("PSA", "_",  mycountry, "_", vacc_program, "_", vacc_subprogram, "_",
-                    Sys.Date(), ".csv")
-  filename.psa1 <- paste0(output.dir, "/", filename.psa)
+results.df <- data.frame(sim=1:nSims, epi.freq=numeric(nSims), 
+                         nonepi.inc=numeric(nSims))
+ 
+for (s in 1:nSims){
+  # Get annual incidence
+  cases.yr <- aggregate(Cases ~ year, data=my_data[[s]], FUN=sum)[,2] 
+  Inc.yr <- 100000*cases.yr/totalPop$tot
   
-  psa.output <- data.frame(disease=character(0), run_id=numeric(0), year=numeric(0),
-                           age=numeric(0), country=character(0), 
-                           country_name=character(0), cohort_size=numeric(0),
-                           cases=numeric(0), dalys=numeric(0), deaths=numeric(0),
-                           stringsAsFactors = FALSE)
+  # Classify years as major epidemic or not
+  epi.yr <- Inc.yr >= 100
+  # Drop years that are part of multi-year epidemic and not the first year
+  epi.shift <- c(0, epi.yr[1:(length(epi.yr)-1)])
+  epi.clean <- ifelse(epi.yr==1 & epi.shift==1, NA, epi.yr)
   
-  names.df <- data.frame(
-    country_code=c("BDI", "BEN", "BFA", "CAF", "CIV", "CMR", "COD", "ERI", "ETH", "GHA", "GIN", "GMB",
-                   "GNB", "KEN", "MLI", "MRT", "NER", "NGA", "RWA", "SDN", "SEN", "SSD", "TCD", "TGO",
-                   "TZA", "UGA"),
-    country=c("Burundi", "Benin", "Burkina Faso", "Central African Republic",
-              "Cote d'Ivoire", "Cameroon", "Congo, the Democratic Republic of the",
-              "Eritrea", "Ethiopia", "Ghana", "Guinea", "Gambia", "Guinea-Bissau", "Kenya",                                
-              "Mali", "Mauritania", "Niger", "Nigeria", "Rwanda", "Sudan", "Senegal",                              
-              "South Sudan", "Chad", "Togo", "Tanzania, United Republic of", "Uganda" ))
+  # Count epidemics, convert to average inter-epidemic period
+  epi.count <- sum(epi.clean, na.rm=TRUE)
+  results.df$epi.freq[s] <- length(epi.clean[is.na(epi.clean)==FALSE]) / epi.count
   
-  oldnames=c("AgeInYears", "Cases", "Deaths", "DALYs", "cohortsize", "simulation")
-  newnames=c("age", "cases", "deaths", "dalys", "cohort_size", "run_id")
+  # Average incidence in inter-epidemic periods
+  results.df$nonepi.inc[s] <- mean(Inc.yr[Inc.yr < 100])
   
-  for (s in 1:nSims){
-    result.df <- left_join(x=my_data[[s]], y=cohortSize, by=c("year", "AgeInYears"))
-    result.df <- result.df %>% rename_at(vars(oldnames), ~newnames)
-    psa.output <- bind_rows(psa.output, result.df)
-  }
-  records <- length(psa.output$disease)
-  psa.output$disease <- rep("MenA", times=records)
-  psa.output$country <- rep(mycountry, times=records)
-  psa.output$country_name <- rep(names.df$country[names.df$country_code==mycountry], times=records)
-  
-  write.csv(psa.output, filename.psa1)
-  print(paste("Simulation detail written to", filename.psa1))
 }
 
-
-# Update scenario tracker
-if (automate==TRUE){
-  scenario_tracker$completed[scen_num] <- "TRUE"
-  write.csv(scenario_tracker, paste(input.dir, "scenario_tracker.csv", sep="/"),
-            row.names=FALSE)
-}
-
-print(begin)
-print(Sys.time())
+write.csv(results.df, file="C:/Users/O992928/Desktop/Sim_results.csv")
