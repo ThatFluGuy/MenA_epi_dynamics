@@ -42,8 +42,10 @@ getCohortSize<-function(poparray) {
 }
 
 
-### (2) Count cases, deaths, and DALYs ########################################
-summarizeOneSim<-function(poparray, sim.number=n, cfr.v=cfr, le.df=my.lifex) { 
+### (2) Count cases, deaths, DALYs, and prevalence ############################
+# Focus on prevalence during the dry season (March, week 13)                  #
+summarizeOneSim<-function(poparray, sim.number=n, cfr.v=cfr, le.df=my.lifex,
+                          start.dt=start, end.dt=end) { 
   
   # Inputs:
   # poparray - array with population by age, model compartment, and week
@@ -51,29 +53,47 @@ summarizeOneSim<-function(poparray, sim.number=n, cfr.v=cfr, le.df=my.lifex) {
   # cfr.v    - vector of age-specific case fatality ratios
   # le.df    - data.frame with age- and year-specific life expectancy
   
-  # Output: a data.frame with year, age, simulation, cases, deaths, and DALYs
-  
-  #summarize incident cases by year and year of age, calculate deaths and DALYs
+  # Output: a data.frame with year, age, simulation, cases, deaths, DALYs, prev
+  browser()
+  # Summarize incident cases by year and year of age, calculate deaths and DALYs
   inclong <- melt(poparray[,"Inc",], varname=c("AgeWeek", "TimeWeek"))
   inclong$RealDate <- as.Date(inclong[,2], origin="1970-01-01")
-  #summarize incident cases by year, group all 70+ together
+  
+  # Summarize incident cases by year, group all 70+ together
   inclong$year <- year(inclong$RealDate)
   inclong$AgeInYears <- floor((inclong[,1]-1)/12)
   inclong$AgeInYears <- ifelse(inclong$AgeInYears > 70, 70, inclong$AgeInYears) 
+  
   # Sum by age and year; much faster than aggregate()
   res <- inclong %>% 
     filter(year>=2000) %>% group_by(year, AgeInYears) %>% 
     summarize(Cases=sum(value))
 
-  
   # Vector of case fatality ratios
   cfr.age <- c(cfr.v[1], rep(cfr.v[2], 4), rep(cfr.v[3], 5), rep(cfr.v[4], 5),
                rep(cfr.v[5], 5), rep(cfr.v[6], 51))
   
   res$Deaths <- res$Cases*cfr.age
 
+  # Prevalence in week 13
+  prev.week <- (week(seq(start.dt, end.dt, by=7))==13) # Indices of week 13s
+  carriers <- apply(X=poparray[, c("Nc", "Lc", "Hc"), prev.week], MARGIN=c(1,3), FUN=sum)
+
+  carriers.df <- melt(carriers, varname=c("AgeWeek", "TimeWeek"))
+  carriers.df$RealDate <- as.Date(carriers.df$TimeWeek, origin="1970-01-01")
+  carriers.df$year <- year(carriers.df$RealDate)
+  carriers.df$AgeInYears <- floor((carriers.df[,1]-1)/12)
+  carriers.df$AgeInYears <- ifelse(carriers.df$AgeInYears > 70, 70, carriers.df$AgeInYears)
+  
+  car <- carriers.df %>%
+    filter(year>=2000) %>% group_by(year, AgeInYears) %>%
+    summarize(Carriers=sum(value))
+  
+  res2 <- left_join(res, car[, c("year", "AgeInYears", "Carriers")], 
+               by=c("year", "AgeInYears"))
+  
   # Merge in life expectancy and calculate DALYs
-  results <- merge(res, le.df, by=c("year", "AgeInYears"))
+  results <- merge(res2, le.df, by=c("year", "AgeInYears"))
   results$DALYs <- results$Deaths*results$Life.Ex +
     (results$Cases - results$Deaths) * (0.26 * 0.072) * results$Life.Ex
   

@@ -92,12 +92,14 @@ MenASimulation<-function(startdt, enddt, fp, initpop, vacc_program, countryparam
       over80 <- countryparams[countryparams$year==year(theDate), "dr8084"]/(52.1775)
       deathvec <- c(rep(imr,12),rep(ages1through4,(12*4)),unlist(rep(ages5through79,each=(12*5))),rep(over80,(40*12)+1))
       
-      # Add new strain by dropping Hs to Ls
+      # Add new strain by dropping Hs and Ls to Ns
       if (useNewStrains==TRUE){
         if (year(theDate) %in% newStrainYears){
-          moveNew <- pop[,"Hs",j-1] * newStrainDrop
-          pop[, "Hs", j-1] <- pop[, "Hs", j-1] - moveNew
-          pop[, "Ls", j-1] <- pop[, "Ls", j-1] + moveNew
+          moveHs <- pop[, "Hs", j-1] * newStrainDrop
+          moveLs <- pop[, "Ls", j-1] * newStrainDrop
+          pop[, "Hs", j-1] <- pop[, "Hs", j-1] - moveHs
+          pop[, "Ls", j-1] <- pop[, "Ls", j-1] - moveLs
+          pop[, "Ns", j-1] <- pop[, "Ns", j-1] + moveHs + moveLs
         }
       }
     }

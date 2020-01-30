@@ -22,10 +22,12 @@
 # structure and many of the inputs are derived from that project.             #
 #_____________________________________________________________________________#
 
-## TO DO:
-# 1. Create function to get desired outputs
-# 2. Create set of inputs for Emergent Pathogen models
-# 3. Adapt top-level program to use these inputs and function
+useNewStrains.top <- TRUE
+newStrainYears.top <- c(2001, 2022, 2034)
+newStrainDrop.top <- 1
+newStrainDur.top <- 3
+# Maximum duration of immunity (wh4) is ~36 years
+# Try keeping newStrainDur <= 3 so immunity never exceeds 100 years
 
 
 ### (1) Set up libraries ######################################################
@@ -49,7 +51,7 @@ start <- as.Date("1951-01-01") # Use 1/1/1951 to give 50 years burn-in
 end <- as.Date("2050-12-31")   # Use 50 years of simulation time
 PSA <- TRUE
 seed <- 6543  # Seed for random sto, use same for all scenarios
-nSims <- 200  # Update: 100 takes around 12 minutes if using 4 cores.
+nSims <- 100  # Update: 100 takes around 12 minutes if using 4 cores.
 phi <- 0.2 # Set stochastic parameter
 
 
@@ -145,22 +147,35 @@ initpop[,,1] <- initpop[,,1] * pct.modeled
 myparams <- myparams.full
 myparams$births <- myparams$births * pct.modeled
 
+# (I) If using the Emergent Pathogen model, change the duration 
+# of Hs/Hc immunity per the described scaling factor
+
+if (useNewStrains.top==TRUE){
+  paramfixed$wh1 <- paramfixed$wh1*newStrainDur.top
+  paramfixed$wh2 <- paramfixed$wh2*newStrainDur.top
+  paramfixed$wh3 <- paramfixed$wh3*newStrainDur.top
+  paramfixed$wh4 <- paramfixed$wh4*newStrainDur.top
+
+}
+
 ### (4) Run simulations #######################################################
 # Set up random seed vector and use parallel processing to run simulations.   #
-
+  
 summarizeme <- 1
 # Set the random number seed based on seed, then create a vector of random number seeds (consistent within seed values)
 set.seed(seed, kind = NULL, normal.kind = NULL)
 seed.vec <- unique(floor(runif(nSims*2, 0, 1000000)))[1:nSims]
 
 # Begin simulations
-cl <- makeCluster(4)  #scale this upwards if you're on a workstation with >16gb memory
+cl <- makeCluster(2)  #scale this upwards if you're on a workstation with >16gb memory
 registerDoParallel(cl)
 my_data <- foreach(n=1:nSims, .verbose=TRUE, .packages = c("lubridate", "dplyr", "data.table", "reshape2")) %dopar% {
   set.seed(seed.vec[n])
   paramfixed.row <- paramfixed[n,]  
   finalpop<-MenASimulation(startdt=start, enddt=end, fp=paramfixed.row, initpop=initpop, vacc_program=vacc_program,
-                           countryparams=myparams, region=myregion, country=mycountry)
+                           countryparams=myparams, region=myregion, country=mycountry,
+                           useNewStrains=useNewStrains.top, newStrainYears=newStrainYears.top,
+                           newStrainDrop=newStrainDrop.top)
   if (summarizeme > 0) {
     # Using PSA option for CFR
     cfr <- as.numeric(paramfixed.row[, c("cfr1", "cfr2", "cfr3", "cfr4", "cfr5", "cfr6")])
@@ -183,9 +198,17 @@ totalPop <- cohortSize %>%
 ### (5) Create outputs ########################################################
 # Calculate overall annual incidence, identify frequency of major epidemics,  #
 # and get inter-epidemic incidence.                                           #
+# Need to add calculation of age-specific prevalence                          #
 
-results.df <- data.frame(sim=1:nSims, epi.freq=numeric(nSims), 
+results.inc <- data.frame(sim=1:nSims, epi.freq=numeric(nSims), 
                          nonepi.inc=numeric(nSims))
+
+prev.compile <- data.frame(AgeGroup=numeric(0), epi.yr=logical(0),
+                           Prev=numeric(0))
+
+incid.compile <- data.frame(epi.yr=character(0), AgeGroup=numeric(0), 
+                            Incid=numeric(0), stringsAsFactors = FALSE)
+
  
 for (s in 1:nSims){
   # Get annual incidence
@@ -200,11 +223,86 @@ for (s in 1:nSims){
   
   # Count epidemics, convert to average inter-epidemic period
   epi.count <- sum(epi.clean, na.rm=TRUE)
-  results.df$epi.freq[s] <- length(epi.clean[is.na(epi.clean)==FALSE]) / epi.count
+  results.inc$epi.freq[s] <- length(epi.clean[is.na(epi.clean)==FALSE]) / epi.count
   
   # Average incidence in inter-epidemic periods
-  results.df$nonepi.inc[s] <- mean(Inc.yr[Inc.yr < 100])
+  results.inc$nonepi.inc[s] <- mean(Inc.yr[Inc.yr < 100])
+  
+  # Classify years
+  cases.yr <- aggregate(Cases ~ year, data=my_data[[s]], FUN=sum) 
+  cases.yr$Inc.yr <- 100000*cases.yr$Cases / totalPop$tot
+  cases.yr$epi.yr <- case_when(
+    cases.yr$Inc.yr < 20 ~ "minor",
+    cases.yr$Inc.yr < 100 ~ "middle",
+    cases.yr$Inc.yr >= 100 ~ "major"
+  )
+  
+  # Incidence by year and age group
+  inc.df <- left_join(my_data[[s]], cohortSize, by=c("year", "AgeInYears"))
+  
+  inc.df$AgeGroup <- case_when(
+    inc.df$AgeInYears < 1 ~ 0,
+    inc.df$AgeInYears < 5 ~ 1,
+    inc.df$AgeInYears < 10 ~ 5,
+    inc.df$AgeInYears < 15 ~ 10,
+    inc.df$AgeInYears < 20 ~ 15,
+    inc.df$AgeInYears < 25 ~ 20,
+    inc.df$AgeInYears < 30 ~ 25,
+    TRUE ~ 30
+  )
+  
+  inc.df2 <- inc.df %>% group_by(year, AgeGroup) %>%
+    summarize(Cases=sum(Cases), cohortsize=sum(cohortsize))
+  inc.df2$Incid <- 100000 * inc.df2$Cases / inc.df2$cohortsize
+  
+  inc.df3 <- left_join(inc.df2[, c("year", "AgeGroup", "Incid")], 
+                       cases.yr[, c("year", "epi.yr")], by="year")
+  
+  incid.compile <- rbind(incid.compile, as.data.frame(inc.df3))
+  
+  
+  # Get age-specific prevalence by type of year (major epidemic vs not)
+  # First add in cohort sizes
+  prev.df <- left_join(my_data[[s]], cohortSize, by=c("year", "AgeInYears"))
+  
+  prev.df$AgeGroup <- case_when(
+    prev.df$AgeInYears < 1 ~ 0,
+    prev.df$AgeInYears < 5 ~ 1,
+    prev.df$AgeInYears < 10 ~ 5,
+    prev.df$AgeInYears < 15 ~ 10,
+    prev.df$AgeInYears < 20 ~ 15,
+    prev.df$AgeInYears < 25 ~ 20,
+    prev.df$AgeInYears < 30 ~ 25,
+    TRUE ~ 30
+  )
+  
+  # Sum carriers and cohort sizes by age group
+  prev.df2 <- prev.df %>% group_by(year, AgeGroup) %>%
+    summarize(Carriers=sum(Carriers), cohortsize=sum(cohortsize))
+  
+  # Calculate year- and agegroup-specific prevalence
+  prev.df2$Prev <- prev.df2$Carriers / prev.df2$cohortsize
+  
+  # Assign years as major epidemic vs not
+  prev.df3 <- left_join(prev.df2, data.frame(year=2000:2050, epi.yr), by="year")
+
+  prev.compile <- rbind(prev.compile, 
+                        as.data.frame(prev.df3[, c("AgeGroup", "epi.yr", "Prev")]))
   
 }
 
-write.csv(results.df, file="C:/Users/O992928/Desktop/Sim_results.csv")
+write.csv(results.inc, file="C:/Users/O992928/Desktop/Sim_incidence.csv",
+          row.names=FALSE)
+
+# Incidence by age and epidemic type
+inc.df4 <- incid.compile %>% group_by(epi.yr, AgeGroup) %>%
+  summarize(meanInc=mean(Incid), stdInc=sd(Incid))
+
+write.csv(inc.df4, file="C:/Users/O992928/Desktop/Sim_incid.csv", row.names=FALSE)
+
+# Get mean and std prevalence by age group and epi.yr
+prev.df4 <- prev.compile %>% group_by(AgeGroup, epi.yr) %>%
+  summarize(meanPrev=mean(Prev), stdPrev=sd(Prev), N=length(Prev)) %>%
+  arrange(epi.yr, AgeGroup)
+
+write.csv(prev.df4, file="C:/Users/O992928/Desktop/Sim_prevalence.csv", row.names=FALSE)
